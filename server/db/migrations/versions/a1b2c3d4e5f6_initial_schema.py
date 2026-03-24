@@ -18,59 +18,36 @@ branch_labels = None
 depends_on = None
 
 
+def _create_enum(name: str, values: list) -> None:
+    """Create a PostgreSQL enum type, silently skipping if it already exists.
+
+    postgresql.ENUM.create(checkfirst=True) does not work reliably with the
+    asyncpg driver because the dialect introspection query cannot execute
+    inside run_sync.  A DO block traps duplicate_object at the SQL layer
+    instead, making this idempotent regardless of driver.
+    """
+    vals = ', '.join(f"'{v}'" for v in values)
+    op.execute(sa.text(
+        f"DO $$ BEGIN CREATE TYPE {name} AS ENUM ({vals});"
+        f" EXCEPTION WHEN duplicate_object THEN null; END $$;"
+    ))
+
+
 def upgrade() -> None:
     # ------------------------------------------------------------------
-    # Enum types
+    # Enum types  (idempotent — safe to re-run)
     # ------------------------------------------------------------------
-    ostype = postgresql.ENUM(
-        'linux', 'windows', 'darwin', 'unix', 'unknown',
-        name='ostype', create_type=True,
-    )
-    devicestatus = postgresql.ENUM(
-        'online', 'offline', 'unknown',
-        name='devicestatus', create_type=True,
-    )
-    scantype = postgresql.ENUM(
-        'full', 'network', 'packages', 'config', 'quick',
-        name='scantype', create_type=True,
-    )
-    scanstatus = postgresql.ENUM(
-        'pending', 'running', 'completed', 'failed', 'cancelled',
-        name='scanstatus', create_type=True,
-    )
-    severity = postgresql.ENUM(
-        'critical', 'high', 'medium', 'low', 'none', 'unknown',
-        name='severity', create_type=True,
-    )
-    findingstatus = postgresql.ENUM(
-        'open', 'acknowledged', 'false_positive', 'resolved',
-        name='findingstatus', create_type=True,
-    )
-    findingtype = postgresql.ENUM(
-        'package', 'network', 'config',
-        name='findingtype', create_type=True,
-    )
-    vulnsource = postgresql.ENUM(
-        'nvd', 'osv', 'both',
-        name='vulnsource', create_type=True,
-    )
-    complianceresult = postgresql.ENUM(
-        'pass', 'fail', 'error', 'not_applicable',
-        name='complianceresult', create_type=True,
-    )
-    checktype = postgresql.ENUM(
-        'command', 'file_exists', 'file_content', 'registry', 'service',
-        name='checktype', create_type=True,
-    )
-    discoverymethod = postgresql.ENUM(
-        'manual', 'ping_sweep', 'nmap', 'arp', 'import_csv',
-        name='discoverymethod', create_type=True,
-    )
-
-    for enum in (ostype, devicestatus, scantype, scanstatus, severity,
-                 findingstatus, findingtype, vulnsource, complianceresult,
-                 checktype, discoverymethod):
-        enum.create(op.get_bind(), checkfirst=True)
+    _create_enum('ostype',          ['linux', 'windows', 'darwin', 'unix', 'unknown'])
+    _create_enum('devicestatus',    ['online', 'offline', 'unknown'])
+    _create_enum('scantype',        ['full', 'network', 'packages', 'config', 'quick'])
+    _create_enum('scanstatus',      ['pending', 'running', 'completed', 'failed', 'cancelled'])
+    _create_enum('severity',        ['critical', 'high', 'medium', 'low', 'none', 'unknown'])
+    _create_enum('findingstatus',   ['open', 'acknowledged', 'false_positive', 'resolved'])
+    _create_enum('findingtype',     ['package', 'network', 'config'])
+    _create_enum('vulnsource',      ['nvd', 'osv', 'both'])
+    _create_enum('complianceresult',['pass', 'fail', 'error', 'not_applicable'])
+    _create_enum('checktype',       ['command', 'file_exists', 'file_content', 'registry', 'service'])
+    _create_enum('discoverymethod', ['manual', 'ping_sweep', 'nmap', 'arp', 'import_csv'])
 
     # ------------------------------------------------------------------
     # users
@@ -436,8 +413,11 @@ def downgrade() -> None:
     op.drop_table('devices')
     op.drop_table('users')
 
-    # Drop enum types
+    # Drop enum types (same DO-block pattern — safe if already absent)
     for name in ('discoverymethod', 'checktype', 'complianceresult', 'vulnsource',
                  'findingtype', 'findingstatus', 'severity', 'scanstatus',
                  'scantype', 'devicestatus', 'ostype'):
-        postgresql.ENUM(name=name).drop(op.get_bind(), checkfirst=True)
+        op.execute(sa.text(
+            f"DO $$ BEGIN DROP TYPE {name};"
+            f" EXCEPTION WHEN undefined_object THEN null; END $$;"
+        ))
