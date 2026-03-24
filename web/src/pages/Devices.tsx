@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Search, Trash2, Edit2, RefreshCw } from 'lucide-react'
+import { Plus, Search, Trash2, RefreshCw } from 'lucide-react'
 import { listDevices, createDevice, deleteDevice } from '../lib/api'
-import type { Device, DeviceListResponse } from '../types'
+import type { DeviceListResponse } from '../types'
 import { format } from 'date-fns'
 
 const OS_ICONS: Record<string, string> = {

@@ -1,7 +1,7 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Monitor, ScanSearch, ShieldAlert,
-  FileSearch, LogOut, ChevronRight,
+  FileSearch, LogOut,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 

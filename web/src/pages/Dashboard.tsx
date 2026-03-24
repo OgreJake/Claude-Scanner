@@ -5,7 +5,7 @@ import {
 } from 'recharts'
 import { ShieldAlert, Monitor, ScanSearch, AlertTriangle } from 'lucide-react'
 import { getFindingsSummary, listScans, listDevices, getTopEpssFindings } from '../lib/api'
-import type { FindingSummary, ScanJob, Device, Finding } from '../types'
+import type { FindingSummary, ScanJob, Finding } from '../types'
 import SeverityBadge from '../components/SeverityBadge'
 import { format } from 'date-fns'
 
@@ -211,9 +211,6 @@ export default function Dashboard() {
         </div>
         <div className="divide-y divide-gray-100">
           {scansData?.map((scan) => {
-            const pct = scan.total_devices > 0
-              ? Math.round((scan.completed_devices / scan.total_devices) * 100)
-              : 0
             const statusColor: Record<string, string> = {
               completed: 'text-green-700 bg-green-50',
               running: 'text-yellow-700 bg-yellow-50',
