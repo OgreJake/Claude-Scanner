@@ -1,3 +1,22 @@
+# ============================================================
+# Claude Scanner project-specific ignores
+# ============================================================
+deploy/.env
+*.env.local
+bin/
+*.exe
+web/node_modules/
+web/dist/
+web/.vite/
+*.pem
+*.key
+*.p12
+id_rsa
+id_ed25519
+
+# ============================================================
+# Python
+# ============================================================
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

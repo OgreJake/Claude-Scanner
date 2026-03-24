@@ -1,0 +1,104 @@
+services:
+
+  # ------------------------------------------------------------------
+  # PostgreSQL — primary data store
+  # ------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-claude_scanner}
+      POSTGRES_USER: ${POSTGRES_USER:-scanner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scanner} -d ${POSTGRES_DB:-claude_scanner}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ------------------------------------------------------------------
+  # Redis — Celery broker + result backend + caching layer
+  # ------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ------------------------------------------------------------------
+  # API Server — FastAPI backend
+  # ------------------------------------------------------------------
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../server:/app/server:ro
+      - ../cli:/app/cli:ro
+      - ../benchmarks:/app/benchmarks:ro
+      - scan_reports:/app/reports
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn server.main:app --host 0.0.0.0 --port 8000"
+
+  # ------------------------------------------------------------------
+  # Celery Worker — background scan task execution
+  # ------------------------------------------------------------------
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../server:/app/server:ro
+      - ../benchmarks:/app/benchmarks:ro
+      - scan_reports:/app/reports
+    command: celery -A server.tasks.celery_app worker --loglevel=info --concurrency=16 -Q scans,discovery,enrichment
+
+  # ------------------------------------------------------------------
+  # Web Dashboard — React + Vite frontend
+  # ------------------------------------------------------------------
+  web:
+    build:
+      context: ../web
+      dockerfile: ../deploy/Dockerfile.web
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    environment:
+      - VITE_API_URL=http://localhost:8000
+
+volumes:
+  postgres_data:
+  redis_data:
+  scan_reports:
