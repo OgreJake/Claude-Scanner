@@ -65,13 +65,13 @@ run-worker: ## Run Celery worker for background scan tasks
 ##@ Database
 
 migrate: ## Create a new Alembic migration (MESSAGE required: make migrate MESSAGE="add foo")
-	alembic revision --autogenerate -m "$(MESSAGE)"
+	docker compose -f deploy/docker-compose.yml exec api alembic -c alembic.ini revision --autogenerate -m "$(MESSAGE)"
 
 db-upgrade: ## Apply all pending migrations
-	alembic upgrade head
+	docker compose -f deploy/docker-compose.yml exec api alembic -c alembic.ini upgrade head
 
 db-downgrade: ## Revert last migration
-	alembic downgrade -1
+	docker compose -f deploy/docker-compose.yml exec api alembic -c alembic.ini downgrade -1
 
 ##@ Web
 

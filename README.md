@@ -71,14 +71,13 @@ This builds and starts: PostgreSQL, Redis, API server, Celery worker, and the ng
 ### 3. Run database migrations
 
 ```bash
-# Wait ~10 seconds for postgres to be healthy, then:
-docker compose -f deploy/docker-compose.yml exec api alembic upgrade head
+make db-upgrade
 ```
 
 ### 4. Create your first user
 
 ```bash
-curl -s -X POST http://localhost:8000/api/auth/register \
+curl -s -X POST http://localhost:3000/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"changeme","email":"admin@example.com"}' | python3 -m json.tool
 ```
@@ -114,7 +113,7 @@ pip install -e ".[dev]"
 docker compose -f deploy/docker-compose.yml up -d postgres redis
 
 # Run database migrations
-alembic -c deploy/alembic.ini upgrade head
+make db-upgrade
 
 # Start API server with hot-reload
 make run-dev
@@ -302,8 +301,8 @@ make db-downgrade
 | `make run-worker` | Run Celery background worker |
 | `make web-dev` | Run Vite dev server |
 | `make web-build` | Build web dashboard for production |
-| `make migrate` | Create Alembic migration (`MESSAGE=` required) |
-| `make db-upgrade` | Apply pending migrations |
+| `make migrate` | Create Alembic migration in api container (`MESSAGE=` required) |
+| `make db-upgrade` | Apply pending migrations in api container |
 | `make docker-up` | Build and start all services |
 | `make docker-down` | Stop all services |
 | `make docker-logs` | Tail all service logs |
