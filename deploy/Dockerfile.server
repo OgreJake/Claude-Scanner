@@ -12,15 +12,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy dependency files first for layer caching
+# Copy source and config before installing so hatchling can find packages
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e ".[dev]" || pip install --no-cache-dir -e .
-
-# Copy application source
 COPY server/ ./server/
 COPY cli/ ./cli/
 COPY benchmarks/ ./benchmarks/
 COPY deploy/alembic.ini ./alembic.ini
+
+RUN pip install --no-cache-dir .
 
 # Non-root user for security
 RUN useradd -m -u 1000 scanner && chown -R scanner:scanner /app
