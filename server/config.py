@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any
 
-from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -78,16 +76,14 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
-    CORS_ORIGINS: list[str] = ["http://localhost:3000"]
+    # Comma-separated origins, e.g. "http://localhost:3000,https://scanner.example.com"
+    CORS_ORIGINS: str = "http://localhost:3000"
     APP_TITLE: str = "Claude Scanner"
     APP_VERSION: str = "0.1.0"
 
-    @field_validator("CORS_ORIGINS", mode="before")
-    @classmethod
-    def parse_cors_origins(cls, v: Any) -> list[str]:
-        if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",")]
-        return v
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
 
 
 @lru_cache
