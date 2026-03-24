@@ -101,8 +101,8 @@ lint: ## Run linters
 
 ##@ Docker
 
-docker-up: ## Start all services via Docker Compose
-	docker compose -f deploy/docker-compose.yml up -d
+docker-up: ## Build and start all services via Docker Compose
+	docker compose -f deploy/docker-compose.yml up -d --build
 
 docker-down: ## Stop all services
 	docker compose -f deploy/docker-compose.yml down
