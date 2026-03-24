@@ -17,8 +17,8 @@ export default function ScanDetail() {
   const { data: scan, isLoading } = useQuery<ScanJob>({
     queryKey: ['scan', id],
     queryFn: () => getScan(id!).then((r) => r.data),
-    refetchInterval: (data) =>
-      data?.status === 'running' || data?.status === 'pending' ? 3000 : false,
+    refetchInterval: (query) =>
+      query.state.data?.status === 'running' || query.state.data?.status === 'pending' ? 3000 : false,
   })
 
   if (isLoading) return <div className="text-gray-400 p-8">Loading…</div>
