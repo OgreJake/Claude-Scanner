@@ -23,7 +23,7 @@ dependencies = [
     "passlib[bcrypt]>=1.7.4",
 
     # Settings
-    "pydantic>=2.6.0",
+    "pydantic[email]>=2.6.0",
     "pydantic-settings>=2.2.1",
 
     # HTTP client
