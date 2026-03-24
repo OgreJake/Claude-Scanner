@@ -77,12 +77,14 @@ make db-upgrade
 ### 4. Create your first user
 
 ```bash
-curl -s -X POST http://localhost:3000/api/auth/register \
+curl -X POST http://localhost:8000/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"changeme","email":"admin@example.com"}' | python3 -m json.tool
+  -d '{"username":"admin","password":"changeme","email":"admin@example.com"}'
 ```
 
 The first registered user is automatically granted admin privileges.
+
+> **Note:** The API server is available directly on port `8000`. The web dashboard at port `3000` proxies `/api/*` to the backend (stripping the `/api` prefix), so the same endpoint is also reachable at `http://localhost:3000/api/auth/register`.
 
 ### 5. Open the dashboard
 
