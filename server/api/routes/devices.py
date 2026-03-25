@@ -7,7 +7,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel, IPvAnyAddress
+from pydantic import BaseModel, IPvAnyAddress, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
@@ -74,6 +74,11 @@ class DeviceResponse(BaseModel):
     updated_at: datetime
     last_scanned_at: Optional[datetime]
     open_finding_count: Optional[int] = None
+
+    @field_validator("ip_address", mode="before")
+    @classmethod
+    def _coerce_ip(cls, v: object) -> str:
+        return str(v)
 
     class Config:
         from_attributes = True
