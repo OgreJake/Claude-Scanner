@@ -108,7 +108,7 @@ async def list_devices(
     db: DBSession,
     current_user: CurrentUser,
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=500),
+    page_size: int = Query(50, ge=1, le=1000),
     os_type: Optional[str] = Query(None),
     status_filter: Optional[str] = Query(None, alias="status"),
     search: Optional[str] = Query(None),
