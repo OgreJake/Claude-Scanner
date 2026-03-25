@@ -27,10 +27,9 @@ export default function Scans() {
     refetchInterval: 5000, // poll every 5s while scans are running
   })
 
-  const { data: devicesData } = useQuery<DeviceListResponse>({
+  const { data: devicesData, isLoading: devicesLoading } = useQuery<DeviceListResponse>({
     queryKey: ['devices-all'],
     queryFn: () => listDevices({ page_size: 1000 }).then((r) => r.data),
-    enabled: showNew,
   })
 
   const createMutation = useMutation({
@@ -114,6 +113,12 @@ export default function Scans() {
               Select Devices ({selectedDevices.length} selected)
             </label>
             <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y">
+              {devicesLoading && (
+                <p className="px-3 py-4 text-xs text-gray-400 text-center">Loading devices…</p>
+              )}
+              {!devicesLoading && !devicesData?.items.length && (
+                <p className="px-3 py-4 text-xs text-gray-400 text-center">No devices found. Add one on the Devices page first.</p>
+              )}
               {devicesData?.items.map((d) => (
                 <label key={d.id} className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer">
                   <input
