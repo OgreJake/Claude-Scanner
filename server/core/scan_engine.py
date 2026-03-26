@@ -221,9 +221,10 @@ class ScanEngine:
         override_password: Optional[str] = None,
     ) -> None:
         """Run agentless scan via SSH or WinRM."""
+        ip_address = str(device.ip_address)
         creds = await self.cred_manager.get_credentials(
             hostname=device.hostname,
-            ip_address=device.ip_address,
+            ip_address=ip_address,
             credential_ref=device.credential_ref,
             os_type=device.os_type.value if device.os_type else "linux",
             override_username=override_username,
@@ -235,7 +236,7 @@ class ScanEngine:
 
         if os_type == "windows":
             transport = WinRMTransport(
-                host=device.ip_address,
+                host=ip_address,
                 port=device.winrm_port,
                 username=creds.username,
                 password=creds.password or "",
@@ -245,7 +246,7 @@ class ScanEngine:
             )
         else:
             transport = SSHTransport(
-                host=device.ip_address,
+                host=ip_address,
                 port=device.ssh_port,
                 username=creds.username,
                 password=creds.password,
