@@ -8,6 +8,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 
 from server.api.deps import CurrentUser, DBSession
 from server.db.models import (
@@ -160,16 +161,13 @@ async def list_scans(
 @router.get("/{scan_id}", response_model=ScanJobDetail)
 async def get_scan(scan_id: str, db: DBSession, current_user: CurrentUser) -> ScanJob:
     result = await db.execute(
-        select(ScanJob).where(ScanJob.id == scan_id)
+        select(ScanJob)
+        .options(selectinload(ScanJob.targets))
+        .where(ScanJob.id == scan_id)
     )
     job = result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found")
-
-    targets_result = await db.execute(
-        select(ScanTarget).where(ScanTarget.scan_job_id == scan_id)
-    )
-    job.targets = targets_result.scalars().all()
     return job
 
 

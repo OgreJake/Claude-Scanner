@@ -454,7 +454,12 @@ class VulnerabilityEnrichmentService:
         # Fetch fresh data from NVD
         raw = await self.nvd.fetch_cve(cve_id)
         if raw is None:
-            return vuln  # Return stale record rather than nothing
+            # Record the attempt so the TTL prevents repeated NVD queries for
+            # CVEs that genuinely have no NVD entry.
+            if vuln is not None:
+                vuln.last_fetched_at = datetime.utcnow()
+                await db.flush()
+            return vuln
 
         parsed = self.nvd.parse_cve(raw)
 
@@ -511,9 +516,14 @@ class VulnerabilityEnrichmentService:
                     db.add(Vulnerability(**parsed))
                     await db.flush()
 
-                # If it's a CVE, also enrich from NVD for CVSS scores
+                # If it's a CVE, also enrich from NVD for CVSS scores.
+                # Force refresh for newly created records — they were just added
+                # from OSV data which never carries a numerical CVSS score, so
+                # the stale-time check would incorrectly skip the NVD fetch.
                 if cve_id.startswith("CVE-"):
-                    await self.get_or_fetch_cve(db, cve_id)
+                    await self.get_or_fetch_cve(
+                        db, cve_id, force_refresh=(existing is None)
+                    )
 
                 findings.append({
                     "vulnerability_id": cve_id,
