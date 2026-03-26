@@ -393,6 +393,18 @@ class ScanEngine:
         if not raw_findings:
             return
 
+        # Deduplicate by the unique constraint key (vulnerability_id, package_name)
+        # before the loop — autoflush=False means in-session adds are invisible to
+        # the per-row SELECT, so intra-batch duplicates must be removed up front.
+        seen: set[tuple[str, str]] = set()
+        deduped: list[dict[str, Any]] = []
+        for f in raw_findings:
+            key = (f["vulnerability_id"], f.get("package_name", ""))
+            if key not in seen:
+                seen.add(key)
+                deduped.append(f)
+        raw_findings = deduped
+
         cve_ids = [f["vulnerability_id"] for f in raw_findings]
         await self.enrichment.attach_epss_scores(db, cve_ids)
 
