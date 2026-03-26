@@ -13,6 +13,7 @@ from server.api.deps import CurrentUser, DBSession
 from server.db.models import (
     Device, DiscoveryJob, ScanJob, ScanStatus, ScanTarget, ScanType,
 )
+from server.tasks.celery_app import celery_app  # noqa: F401 — registers app as current
 from server.tasks.scan_tasks import scan_device
 from server.tasks.discovery_tasks import run_discovery
 
@@ -182,7 +183,6 @@ async def cancel_scan(scan_id: str, db: DBSession, current_user: CurrentUser) ->
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Scan is not active")
 
     # Revoke pending Celery tasks
-    from server.tasks.celery_app import celery_app
     targets_result = await db.execute(
         select(ScanTarget).where(
             ScanTarget.scan_job_id == scan_id,
