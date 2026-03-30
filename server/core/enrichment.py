@@ -421,6 +421,7 @@ class EPSSClient:
         self._client = httpx.AsyncClient(
             base_url=settings.EPSS_API_BASE_URL,
             timeout=30.0,
+            headers={"User-Agent": "claude-scanner/0.1 (security research; httpx)"},
         )
 
     async def close(self) -> None:
@@ -435,7 +436,6 @@ class EPSSClient:
             return {}
 
         results: dict[str, dict[str, Any]] = {}
-        # API accepts up to 100 CVEs per request via cve= comma list
         chunk_size = 100
         for i in range(0, len(cve_ids), chunk_size):
             chunk = cve_ids[i : i + chunk_size]
@@ -446,16 +446,24 @@ class EPSSClient:
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                for entry in data.get("data", []):
+                entries = data.get("data", [])
+                logger.info(
+                    "EPSS API returned %d scores for %d CVEs requested",
+                    len(entries), len(chunk),
+                )
+                for entry in entries:
                     cve = entry.get("cve", "")
-                    results[cve] = {
-                        "epss": float(entry.get("epss", 0)),
-                        "percentile": float(entry.get("percentile", 0)),
-                        "date": entry.get("date"),
-                        "model_version": data.get("version"),
-                    }
+                    if cve:
+                        results[cve] = {
+                            "epss": float(entry.get("epss") or 0),
+                            "percentile": float(entry.get("percentile") or 0),
+                            "date": entry.get("date"),
+                            "model_version": data.get("version"),
+                        }
             except httpx.HTTPStatusError as exc:
-                logger.warning("EPSS fetch failed for chunk: %s", exc)
+                logger.warning("EPSS fetch HTTP error for chunk starting %s: %s", chunk[0], exc)
+            except Exception as exc:
+                logger.warning("EPSS fetch failed for chunk starting %s: %s", chunk[0], exc)
         return results
 
 
@@ -616,35 +624,58 @@ class VulnerabilityEnrichmentService:
         self,
         db: AsyncSession,
         cve_ids: list[str],
-    ) -> None:
+    ) -> dict[str, tuple[float, float]]:
         """
-        Bulk-fetch EPSS scores for a list of CVE IDs and upsert EPSSScore records.
+        Bulk-fetch EPSS scores for a list of CVE IDs, upsert EPSSScore records,
+        and return a mapping of {cve_id: (epss_score, percentile)} so callers
+        can use the scores immediately without a second DB query.
         """
-        cve_only = [c for c in cve_ids if c.startswith("CVE-")]
+        # Deduplicate and filter to real CVE IDs only
+        cve_only = list({c for c in cve_ids if c.startswith("CVE-")})
         if not cve_only:
-            return
+            logger.info("EPSS: no CVE-prefixed IDs in batch of %d — skipping", len(cve_ids))
+            return {}
 
+        logger.info("EPSS: fetching scores for %d unique CVE IDs", len(cve_only))
         scores = await self.epss.fetch_scores(cve_only)
+        logger.info("EPSS: received scores for %d / %d CVEs", len(scores), len(cve_only))
+
+        live_scores: dict[str, tuple[float, float]] = {}
+
         for cve_id, score_data in scores.items():
-            result = await db.execute(select(EPSSScore).where(EPSSScore.cve_id == cve_id))
-            existing = result.scalar_one_or_none()
+            epss_val = score_data["epss"]
+            pct_val = score_data["percentile"]
+            live_scores[cve_id] = (epss_val, pct_val)
+
             scored_at_str = score_data.get("date")
             scored_at = (
                 datetime.fromisoformat(scored_at_str) if scored_at_str
                 else datetime.utcnow()
             )
-            if existing is None:
-                db.add(EPSSScore(
-                    cve_id=cve_id,
-                    epss_score=score_data["epss"],
-                    percentile=score_data["percentile"],
-                    model_version=score_data.get("model_version"),
-                    scored_at=scored_at,
-                ))
-            else:
-                existing.epss_score = score_data["epss"]
-                existing.percentile = score_data["percentile"]
-                existing.scored_at = scored_at
-                existing.fetched_at = datetime.utcnow()
 
-        await db.flush()
+            try:
+                result = await db.execute(select(EPSSScore).where(EPSSScore.cve_id == cve_id))
+                existing = result.scalar_one_or_none()
+                if existing is None:
+                    db.add(EPSSScore(
+                        cve_id=cve_id,
+                        epss_score=epss_val,
+                        percentile=pct_val,
+                        model_version=score_data.get("model_version"),
+                        scored_at=scored_at,
+                    ))
+                else:
+                    existing.epss_score = epss_val
+                    existing.percentile = pct_val
+                    existing.scored_at = scored_at
+                    existing.fetched_at = datetime.utcnow()
+            except Exception as exc:
+                logger.warning("EPSS: failed to upsert score for %s: %s", cve_id, exc)
+
+        if live_scores:
+            try:
+                await db.flush()
+            except Exception as exc:
+                logger.warning("EPSS: flush failed, scores held in memory only: %s", exc)
+
+        return live_scores

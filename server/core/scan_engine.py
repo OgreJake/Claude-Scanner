@@ -406,27 +406,24 @@ class ScanEngine:
         raw_findings = deduped
 
         cve_ids = [f["vulnerability_id"] for f in raw_findings]
-        await self.enrichment.attach_epss_scores(db, cve_ids)
+        # attach_epss_scores returns a live {cve_id: (score, pct)} map so we
+        # don't need a separate DB query per finding to retrieve the values.
+        epss_map = await self.enrichment.attach_epss_scores(db, cve_ids)
 
         from sqlalchemy import select as sa_select
-        from server.db.models import EPSSScore, Vulnerability as VulnModel
+        from server.db.models import Vulnerability as VulnModel
 
         for finding_data in raw_findings:
             vuln_id = finding_data["vulnerability_id"]
-
-            # Get EPSS score if available
-            epss_result = await db.execute(
-                sa_select(EPSSScore).where(EPSSScore.cve_id == vuln_id)
-            )
-            epss = epss_result.scalar_one_or_none()
 
             vuln_result = await db.execute(
                 sa_select(VulnModel).where(VulnModel.id == vuln_id)
             )
             vuln = vuln_result.scalar_one_or_none()
 
-            epss_score = epss.epss_score if epss else None
-            epss_pct = epss.percentile if epss else None
+            epss_entry = epss_map.get(vuln_id)
+            epss_score = epss_entry[0] if epss_entry else None
+            epss_pct   = epss_entry[1] if epss_entry else None
             cvss = vuln.cvss_v3_score if vuln else None
             severity = (
                 _severity_for_score(cvss, epss_score)
