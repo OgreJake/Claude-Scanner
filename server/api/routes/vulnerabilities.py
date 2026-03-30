@@ -130,17 +130,8 @@ async def get_findings_summary(db: DBSession, current_user: CurrentUser) -> Find
     return FindingSummary(**summary)
 
 
-@router.get("/{vuln_id}", response_model=VulnerabilityResponse)
-async def get_vulnerability(vuln_id: str, db: DBSession, current_user: CurrentUser) -> Vulnerability:
-    result = await db.execute(select(Vulnerability).where(Vulnerability.id == vuln_id))
-    vuln = result.scalar_one_or_none()
-    if not vuln:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vulnerability not found")
-    return vuln
-
-
 # ---------------------------------------------------------------------------
-# Findings routes
+# Findings routes  (MUST be declared before /{vuln_id} to avoid route shadowing)
 # ---------------------------------------------------------------------------
 
 @router.get("/findings", response_model=list[FindingResponse])
@@ -211,3 +202,17 @@ async def top_epss_findings(
         .limit(limit)
     )
     return result.scalars().all()
+
+
+# ---------------------------------------------------------------------------
+# Single-vulnerability lookup  (parametric route — MUST be last to avoid
+# shadowing the fixed paths /findings, /summary, /top-epss above)
+# ---------------------------------------------------------------------------
+
+@router.get("/{vuln_id}", response_model=VulnerabilityResponse)
+async def get_vulnerability(vuln_id: str, db: DBSession, current_user: CurrentUser) -> Vulnerability:
+    result = await db.execute(select(Vulnerability).where(Vulnerability.id == vuln_id))
+    vuln = result.scalar_one_or_none()
+    if not vuln:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vulnerability not found")
+    return vuln

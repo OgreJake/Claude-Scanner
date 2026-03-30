@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -27,6 +28,52 @@ from server.config import settings
 from server.db.models import EPSSScore, Severity, Vulnerability, VulnSource
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# CVSS v3 base-score calculator (no external library required)
+# ---------------------------------------------------------------------------
+
+def _cvss3_score_from_vector(vector: str) -> Optional[float]:
+    """
+    Calculate the CVSS v3 numerical base score from a vector string such as
+    ``CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H``.
+    Returns None if the vector cannot be parsed.
+    """
+    if not vector or not vector.startswith("CVSS:3"):
+        return None
+    try:
+        parts = dict(item.split(":") for item in vector.split("/")[1:])
+
+        av  = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.20}[parts["AV"]]
+        ac  = {"L": 0.77, "H": 0.44}[parts["AC"]]
+        ui  = {"N": 0.85, "R": 0.62}[parts["UI"]]
+        s   = parts["S"]
+        # Privileges Required has different weights when scope changes
+        pr_map = (
+            {"N": 0.85, "L": 0.68, "H": 0.50} if s == "C"
+            else {"N": 0.85, "L": 0.62, "H": 0.27}
+        )
+        pr  = pr_map[parts["PR"]]
+        ci  = {"N": 0.00, "L": 0.22, "H": 0.56}[parts["C"]]
+        ii  = {"N": 0.00, "L": 0.22, "H": 0.56}[parts["I"]]
+        ai  = {"N": 0.00, "L": 0.22, "H": 0.56}[parts["A"]]
+
+        isc_base = 1.0 - (1.0 - ci) * (1.0 - ii) * (1.0 - ai)
+        if s == "U":
+            iss = 6.42 * isc_base
+        else:
+            iss = 7.52 * (isc_base - 0.029) - 3.25 * (isc_base - 0.02) ** 15
+
+        if iss <= 0:
+            return 0.0
+
+        exploit = 8.22 * av * ac * pr * ui
+        raw = min(iss + exploit, 10.0) if s == "U" else min(1.08 * (iss + exploit), 10.0)
+        # Roundup: ceiling to nearest tenth
+        return math.ceil(raw * 10) / 10
+    except (KeyError, ValueError, ZeroDivisionError):
+        return None
 
 # ---------------------------------------------------------------------------
 # Severity mapping helpers
@@ -105,8 +152,11 @@ class NVDClient:
             headers=headers,
             timeout=30.0,
         )
+        # NVD allows 50 req/30 s with an API key, only 5 req/30 s without.
+        # Respect the lower limit to avoid 403/429 responses.
+        rate = settings.NVD_RATE_LIMIT_REQUESTS if settings.NVD_API_KEY else 5
         self._rate_limiter = _RateLimiter(
-            rate=settings.NVD_RATE_LIMIT_REQUESTS,
+            rate=rate,
             window=settings.NVD_RATE_LIMIT_WINDOW,
         )
 
@@ -314,10 +364,9 @@ class OSVClient:
         for s in severity_entries:
             if s.get("type") in ("CVSS_V3", "CVSS_V31"):
                 vec = s.get("score", "")
-                # Extract base score from vector
-                m = re.search(r"/AV:", vec)
-                if m:
+                if re.search(r"/AV:", vec):
                     cvss_v3_vec = vec
+                    cvss_v3_score = _cvss3_score_from_vector(vec)
                 break
 
         affected_packages = []
