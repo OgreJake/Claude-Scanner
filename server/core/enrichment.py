@@ -630,12 +630,27 @@ class VulnerabilityEnrichmentService:
         and return a mapping of {cve_id: (epss_score, percentile)} so callers
         can use the scores immediately without a second DB query.
         """
-        # Deduplicate and filter to real CVE IDs only
-        cve_only = list({c for c in cve_ids if c.startswith("CVE-")})
-        if not cve_only:
-            logger.info("EPSS: no CVE-prefixed IDs in batch of %d — skipping", len(cve_ids))
+        # Normalize vendor-prefixed IDs (e.g. DEBIAN-CVE-2024-1234 → CVE-2024-1234)
+        # and build a reverse map so we can key live_scores by the original ID.
+        _cve_re = re.compile(r"(CVE-\d{4}-\d+)$", re.IGNORECASE)
+
+        canonical_to_originals: dict[str, list[str]] = {}
+        for orig in cve_ids:
+            m = _cve_re.search(orig)
+            if m:
+                canonical = m.group(1).upper()
+                canonical_to_originals.setdefault(canonical, []).append(orig)
+
+        if not canonical_to_originals:
+            logger.info(
+                "EPSS: no extractable CVE IDs in batch of %d — skipping "
+                "(sample: %s)",
+                len(cve_ids),
+                cve_ids[:3],
+            )
             return {}
 
+        cve_only = list(canonical_to_originals.keys())
         logger.info("EPSS: fetching scores for %d unique CVE IDs", len(cve_only))
         scores = await self.epss.fetch_scores(cve_only)
         logger.info("EPSS: received scores for %d / %d CVEs", len(scores), len(cve_only))
@@ -645,7 +660,9 @@ class VulnerabilityEnrichmentService:
         for cve_id, score_data in scores.items():
             epss_val = score_data["epss"]
             pct_val = score_data["percentile"]
-            live_scores[cve_id] = (epss_val, pct_val)
+            # Populate live_scores for every original ID that maps to this CVE
+            for orig_id in canonical_to_originals.get(cve_id.upper(), [cve_id]):
+                live_scores[orig_id] = (epss_val, pct_val)
 
             scored_at_str = score_data.get("date")
             scored_at = (
