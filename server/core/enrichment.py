@@ -21,8 +21,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
+import uuid
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from server.config import settings
 from server.db.models import EPSSScore, Severity, Vulnerability, VulnSource
@@ -668,36 +671,37 @@ class VulnerabilityEnrichmentService:
 
             # The vulnerabilities table stores rows under the *original* vendor-
             # prefixed IDs (e.g. DEBIAN-CVE-2025-12345).  The EPSSScore FK
-            # points to vulnerabilities.id, so we must upsert one EPSSScore row
-            # per original ID rather than under the canonical CVE-* key.
+            # points to vulnerabilities.id, so we upsert one EPSSScore row per
+            # original ID using INSERT … ON CONFLICT DO UPDATE.  This is atomic
+            # — it handles rows already in the DB *and* duplicates within the
+            # same in-memory batch without requiring a prior SELECT or flush.
             orig_ids = canonical_to_originals.get(cve_id.upper(), [cve_id])
             for orig_id in orig_ids:
                 live_scores[orig_id] = (epss_val, pct_val)
                 try:
-                    result = await db.execute(
-                        select(EPSSScore).where(EPSSScore.cve_id == orig_id)
-                    )
-                    existing = result.scalar_one_or_none()
-                    if existing is None:
-                        db.add(EPSSScore(
+                    stmt = (
+                        pg_insert(EPSSScore)
+                        .values(
+                            id=str(uuid.uuid4()),
                             cve_id=orig_id,
                             epss_score=epss_val,
                             percentile=pct_val,
                             model_version=score_data.get("model_version"),
                             scored_at=scored_at,
-                        ))
-                    else:
-                        existing.epss_score = epss_val
-                        existing.percentile = pct_val
-                        existing.scored_at = scored_at
-                        existing.fetched_at = datetime.utcnow()
+                            fetched_at=datetime.utcnow(),
+                        )
+                        .on_conflict_do_update(
+                            index_elements=["cve_id"],
+                            set_={
+                                "epss_score": epss_val,
+                                "percentile": pct_val,
+                                "scored_at": scored_at,
+                                "fetched_at": datetime.utcnow(),
+                            },
+                        )
+                    )
+                    await db.execute(stmt)
                 except Exception as exc:
                     logger.warning("EPSS: failed to upsert score for %s: %s", orig_id, exc)
-
-        if live_scores:
-            try:
-                await db.flush()
-            except Exception as exc:
-                logger.warning("EPSS: flush failed, scores held in memory only: %s", exc)
 
         return live_scores
