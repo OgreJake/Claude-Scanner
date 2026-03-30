@@ -660,34 +660,39 @@ class VulnerabilityEnrichmentService:
         for cve_id, score_data in scores.items():
             epss_val = score_data["epss"]
             pct_val = score_data["percentile"]
-            # Populate live_scores for every original ID that maps to this CVE
-            for orig_id in canonical_to_originals.get(cve_id.upper(), [cve_id]):
-                live_scores[orig_id] = (epss_val, pct_val)
-
             scored_at_str = score_data.get("date")
             scored_at = (
                 datetime.fromisoformat(scored_at_str) if scored_at_str
                 else datetime.utcnow()
             )
 
-            try:
-                result = await db.execute(select(EPSSScore).where(EPSSScore.cve_id == cve_id))
-                existing = result.scalar_one_or_none()
-                if existing is None:
-                    db.add(EPSSScore(
-                        cve_id=cve_id,
-                        epss_score=epss_val,
-                        percentile=pct_val,
-                        model_version=score_data.get("model_version"),
-                        scored_at=scored_at,
-                    ))
-                else:
-                    existing.epss_score = epss_val
-                    existing.percentile = pct_val
-                    existing.scored_at = scored_at
-                    existing.fetched_at = datetime.utcnow()
-            except Exception as exc:
-                logger.warning("EPSS: failed to upsert score for %s: %s", cve_id, exc)
+            # The vulnerabilities table stores rows under the *original* vendor-
+            # prefixed IDs (e.g. DEBIAN-CVE-2025-12345).  The EPSSScore FK
+            # points to vulnerabilities.id, so we must upsert one EPSSScore row
+            # per original ID rather than under the canonical CVE-* key.
+            orig_ids = canonical_to_originals.get(cve_id.upper(), [cve_id])
+            for orig_id in orig_ids:
+                live_scores[orig_id] = (epss_val, pct_val)
+                try:
+                    result = await db.execute(
+                        select(EPSSScore).where(EPSSScore.cve_id == orig_id)
+                    )
+                    existing = result.scalar_one_or_none()
+                    if existing is None:
+                        db.add(EPSSScore(
+                            cve_id=orig_id,
+                            epss_score=epss_val,
+                            percentile=pct_val,
+                            model_version=score_data.get("model_version"),
+                            scored_at=scored_at,
+                        ))
+                    else:
+                        existing.epss_score = epss_val
+                        existing.percentile = pct_val
+                        existing.scored_at = scored_at
+                        existing.fetched_at = datetime.utcnow()
+                except Exception as exc:
+                    logger.warning("EPSS: failed to upsert score for %s: %s", orig_id, exc)
 
         if live_scores:
             try:
