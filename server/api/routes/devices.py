@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from server.api.deps import CurrentUser, DBSession
-from server.db.models import Device, DeviceStatus, DiscoveryJob, DiscoveryMethod, OSType, ScanStatus
+from server.db.models import Device, DeviceGroup, DeviceStatus, DiscoveryJob, DiscoveryMethod, OSType, ScanStatus, device_group_members
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
@@ -99,10 +99,40 @@ class BulkImportRow(BaseModel):
     tags: dict[str, Any] = {}
 
 
+class DeviceGroupCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    color: Optional[str] = None          # hex colour, e.g. "#4f46e5"
+
+
+class DeviceGroupUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    color: Optional[str] = None
+
+
+class DeviceGroupResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str]
+    color: Optional[str]
+    device_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class GroupMemberPayload(BaseModel):
+    device_ids: list[str]
+
+
 class DiscoveryRequest(BaseModel):
     name: str
     target_ranges: list[str]   # e.g. ["192.168.1.0/24", "10.0.0.5"]
     ports: list[int] = []      # empty = use scanner defaults
+    group_name: Optional[str] = None   # if set, auto-assign discovered devices to this group
 
 
 class DiscoveryJobResponse(BaseModel):
@@ -198,7 +228,7 @@ async def start_discovery(
     db.add(job)
     await db.flush()
 
-    task = run_discovery.delay(job.id)
+    task = run_discovery.delay(job.id, group_name=payload.group_name)
     job.celery_task_id = task.id
     await db.flush()
 
@@ -217,6 +247,137 @@ async def get_discovery_job(
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovery job not found")
     return job
+
+
+# ---------------------------------------------------------------------------
+# Device Groups  (all fixed-path routes declared before /{device_id})
+# ---------------------------------------------------------------------------
+
+@router.post("/groups", response_model=DeviceGroupResponse, status_code=status.HTTP_201_CREATED)
+async def create_group(
+    payload: DeviceGroupCreate,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> DeviceGroup:
+    existing = (await db.execute(
+        select(DeviceGroup).where(DeviceGroup.name == payload.name)
+    )).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Group name already exists")
+    group = DeviceGroup(**payload.model_dump())
+    db.add(group)
+    await db.flush()
+    return group
+
+
+@router.get("/groups", response_model=list[DeviceGroupResponse])
+async def list_groups(db: DBSession, current_user: CurrentUser) -> list[DeviceGroup]:
+    from sqlalchemy import func as sqlfunc
+    # Include device count without loading all device objects
+    rows = (await db.execute(
+        select(DeviceGroup).order_by(DeviceGroup.name)
+    )).scalars().all()
+    # Annotate each group with its device count
+    for grp in rows:
+        count_result = await db.execute(
+            select(func.count()).select_from(device_group_members).where(
+                device_group_members.c.group_id == grp.id
+            )
+        )
+        grp.__dict__["device_count"] = count_result.scalar_one()
+    return rows
+
+
+@router.get("/groups/{group_id}", response_model=DeviceGroupResponse)
+async def get_group(group_id: str, db: DBSession, current_user: CurrentUser) -> DeviceGroup:
+    result = await db.execute(select(DeviceGroup).where(DeviceGroup.id == group_id))
+    group = result.scalar_one_or_none()
+    if not group:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
+    count_result = await db.execute(
+        select(func.count()).select_from(device_group_members).where(
+            device_group_members.c.group_id == group_id
+        )
+    )
+    group.__dict__["device_count"] = count_result.scalar_one()
+    return group
+
+
+@router.patch("/groups/{group_id}", response_model=DeviceGroupResponse)
+async def update_group(
+    group_id: str,
+    payload: DeviceGroupUpdate,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> DeviceGroup:
+    result = await db.execute(select(DeviceGroup).where(DeviceGroup.id == group_id))
+    group = result.scalar_one_or_none()
+    if not group:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
+    for field, value in payload.model_dump(exclude_none=True).items():
+        setattr(group, field, value)
+    group.updated_at = datetime.utcnow()
+    await db.flush()
+    count_result = await db.execute(
+        select(func.count()).select_from(device_group_members).where(
+            device_group_members.c.group_id == group_id
+        )
+    )
+    group.__dict__["device_count"] = count_result.scalar_one()
+    return group
+
+
+@router.delete("/groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_group(group_id: str, db: DBSession, current_user: CurrentUser) -> None:
+    result = await db.execute(select(DeviceGroup).where(DeviceGroup.id == group_id))
+    group = result.scalar_one_or_none()
+    if not group:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
+    await db.delete(group)
+
+
+@router.post("/groups/{group_id}/members", status_code=status.HTTP_200_OK)
+async def add_group_members(
+    group_id: str,
+    payload: GroupMemberPayload,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> dict:
+    """Add one or more devices to a group. Silently skips devices already in the group."""
+    result = await db.execute(select(DeviceGroup).where(DeviceGroup.id == group_id))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    added = 0
+    for device_id in payload.device_ids:
+        # Verify device exists
+        dev_result = await db.execute(select(Device).where(Device.id == device_id))
+        if not dev_result.scalar_one_or_none():
+            continue
+        stmt = (
+            pg_insert(device_group_members)
+            .values(group_id=group_id, device_id=device_id)
+            .on_conflict_do_nothing()
+        )
+        await db.execute(stmt)
+        added += 1
+    return {"added": added}
+
+
+@router.delete("/groups/{group_id}/members/{device_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_group_member(
+    group_id: str,
+    device_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> None:
+    from sqlalchemy import delete as sa_delete
+    await db.execute(
+        sa_delete(device_group_members).where(
+            device_group_members.c.group_id == group_id,
+            device_group_members.c.device_id == device_id,
+        )
+    )
 
 
 @router.get("/{device_id}", response_model=DeviceResponse)

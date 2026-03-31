@@ -17,7 +17,8 @@ from celery import shared_task
 
 from server.db.database import AsyncSessionLocal
 from server.db.models import (
-    Device, DeviceStatus, DiscoveryJob, DiscoveryMethod, OSType, ScanStatus,
+    Device, DeviceGroup, DeviceStatus, DiscoveryJob, DiscoveryMethod, OSType, ScanStatus,
+    device_group_members,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,21 +35,21 @@ _COMMON_PORTS = [22, 80, 443, 445, 3389, 5985, 8080, 8443]
     queue="discovery",
     soft_time_limit=1800,
 )
-def run_discovery(self, discovery_job_id: str) -> dict:
+def run_discovery(self, discovery_job_id: str, group_name: str | None = None) -> dict:
     """Run a discovery job across configured IP ranges."""
     logger.info("Starting discovery job %s", discovery_job_id)
 
     def _run():
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(_run_discovery_async(discovery_job_id))
+            return loop.run_until_complete(_run_discovery_async(discovery_job_id, group_name))
         finally:
             loop.close()
 
     return _run()
 
 
-async def _run_discovery_async(discovery_job_id: str) -> dict:
+async def _run_discovery_async(discovery_job_id: str, group_name: str | None = None) -> dict:
     async with AsyncSessionLocal() as db:
         from sqlalchemy import select
         result = await db.execute(
@@ -92,6 +93,11 @@ async def _run_discovery_async(discovery_job_id: str) -> dict:
             job.status = ScanStatus.completed
             job.devices_found = devices_found
             job.completed_at = datetime.utcnow()
+
+            # Auto-assign discovered devices to a group if requested
+            if group_name and devices_found > 0:
+                await _assign_devices_to_group(db, discovery_job_id, group_name)
+
         except Exception as exc:
             logger.exception("Discovery job %s failed: %s", discovery_job_id, exc)
             job.status = ScanStatus.failed
@@ -172,3 +178,43 @@ async def _upsert_device(
     ))
     await db.flush()
     return False
+
+
+async def _assign_devices_to_group(db, discovery_job_id: str, group_name: str) -> None:
+    """Find or create a DeviceGroup and add all devices found by this job to it."""
+    from sqlalchemy import select
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    # Find or create the group
+    result = await db.execute(select(DeviceGroup).where(DeviceGroup.name == group_name))
+    group = result.scalar_one_or_none()
+    if group is None:
+        group = DeviceGroup(name=group_name)
+        db.add(group)
+        await db.flush()
+
+    # Get the job to find its target ranges, then match devices by the IPs we probed
+    result = await db.execute(
+        select(DiscoveryJob).where(DiscoveryJob.id == discovery_job_id)
+    )
+    job = result.scalar_one_or_none()
+    if job is None:
+        return
+
+    # Add all online devices discovered after the job started
+    result = await db.execute(
+        select(Device).where(
+            Device.discovery_method == DiscoveryMethod.ping_sweep,
+            Device.status == DeviceStatus.online,
+        )
+    )
+    devices = result.scalars().all()
+    for device in devices:
+        stmt = (
+            pg_insert(device_group_members)
+            .values(group_id=group.id, device_id=device.id)
+            .on_conflict_do_nothing()
+        )
+        await db.execute(stmt)
+
+    logger.info("Assigned %d devices to group '%s'", len(devices), group_name)

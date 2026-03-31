@@ -20,6 +20,8 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Table,
+    Column,
     Text,
     UniqueConstraint,
     func,
@@ -45,6 +47,7 @@ class OSType(str, PyEnum):
     windows = "windows"
     darwin  = "darwin"
     unix    = "unix"
+    ibmi    = "ibmi"     # IBM i (AS/400) via PASE SSH
     unknown = "unknown"
 
 
@@ -130,6 +133,19 @@ class Base(DeclarativeBase):
 
 
 # ---------------------------------------------------------------------------
+# Association table — device ↔ group  (many-to-many, no ORM class needed)
+# ---------------------------------------------------------------------------
+
+device_group_members = Table(
+    "device_group_members",
+    Base.metadata,
+    Column("group_id",  UUID(as_uuid=False), ForeignKey("device_groups.id",  ondelete="CASCADE"), nullable=False),
+    Column("device_id", UUID(as_uuid=False), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False),
+    UniqueConstraint("group_id", "device_id", name="pk_device_group_members"),
+)
+
+
+# ---------------------------------------------------------------------------
 # Users
 # ---------------------------------------------------------------------------
 
@@ -196,11 +212,34 @@ class Device(Base):
     network_services: Mapped[list[NetworkService]] = relationship("NetworkService", back_populates="device")
     findings: Mapped[list[Finding]] = relationship("Finding", back_populates="device")
     compliance_results: Mapped[list[ComplianceResultRecord]] = relationship("ComplianceResultRecord", back_populates="device")
+    groups: Mapped[list[DeviceGroup]] = relationship(
+        "DeviceGroup", secondary=device_group_members, back_populates="devices"
+    )
 
     __table_args__ = (
         UniqueConstraint("hostname", "ip_address", name="uq_device_hostname_ip"),
         Index("ix_device_os_type", "os_type"),
         Index("ix_device_status", "status"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Device Groups
+# ---------------------------------------------------------------------------
+
+class DeviceGroup(Base):
+    """A named collection of devices. Devices may belong to multiple groups."""
+    __tablename__ = "device_groups"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text)
+    color: Mapped[str | None] = mapped_column(String(16))   # hex colour for UI, e.g. "#4f46e5"
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
+
+    devices: Mapped[list[Device]] = relationship(
+        "Device", secondary=device_group_members, back_populates="groups"
     )
 
 

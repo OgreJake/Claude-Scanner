@@ -8,7 +8,7 @@ export interface User {
   created_at: string
 }
 
-export type OSType = 'linux' | 'windows' | 'darwin' | 'unix' | 'unknown'
+export type OSType = 'linux' | 'windows' | 'darwin' | 'unix' | 'ibmi' | 'unknown'
 export type DeviceStatus = 'online' | 'offline' | 'unknown'
 
 export interface Device {
@@ -116,6 +116,16 @@ export interface DiscoveryJob {
   created_at: string
   completed_at: string | null
   error_message: string | null
+}
+
+export interface DeviceGroup {
+  id: string
+  name: string
+  description: string | null
+  color: string | null
+  device_count: number
+  created_at: string
+  updated_at: string
 }
 
 export interface FindingSummary {

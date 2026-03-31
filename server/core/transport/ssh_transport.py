@@ -112,6 +112,18 @@ class SSHTransport(BaseTransport):
         except asyncssh.SFTPError as exc:
             raise TransportError(f"SFTP read failed for {path} on {self.host}: {exc}") from exc
 
+    async def upload_file(self, data: bytes, remote_path: str) -> None:
+        """Upload bytes to a remote path via SFTP."""
+        if self._conn is None:
+            raise TransportError("Not connected.")
+        try:
+            async with self._conn.start_sftp_client() as sftp:
+                buf = BytesIO(data)
+                await sftp.putfo(buf, remote_path)
+            logger.debug("SFTP uploaded %d bytes to %s:%s", len(data), self.host, remote_path)
+        except asyncssh.SFTPError as exc:
+            raise TransportError(f"SFTP upload failed for {remote_path} on {self.host}: {exc}") from exc
+
     async def close(self) -> None:
         if self._conn:
             self._conn.close()

@@ -53,11 +53,32 @@ export const deleteDevice = (id: string) => api.delete(`/devices/${id}`)
 export const bulkImportDevices = (rows: unknown[]) =>
   api.post('/devices/bulk-import', rows)
 
-export const startDiscovery = (data: { name: string; target_ranges: string[]; ports?: number[] }) =>
-  api.post('/devices/discover', data)
+export const startDiscovery = (data: {
+  name: string
+  target_ranges: string[]
+  ports?: number[]
+  group_name?: string
+}) => api.post('/devices/discover', data)
 
 export const getDiscoveryJob = (jobId: string) =>
   api.get(`/devices/discover/${jobId}`)
+
+// --- Device Groups ---
+export const listGroups = () => api.get('/devices/groups')
+
+export const createGroup = (data: { name: string; description?: string; color?: string }) =>
+  api.post('/devices/groups', data)
+
+export const updateGroup = (id: string, data: { name?: string; description?: string; color?: string }) =>
+  api.patch(`/devices/groups/${id}`, data)
+
+export const deleteGroup = (id: string) => api.delete(`/devices/groups/${id}`)
+
+export const addGroupMembers = (groupId: string, deviceIds: string[]) =>
+  api.post(`/devices/groups/${groupId}/members`, { device_ids: deviceIds })
+
+export const removeGroupMember = (groupId: string, deviceId: string) =>
+  api.delete(`/devices/groups/${groupId}/members/${deviceId}`)
 
 // --- Scans ---
 export const listScans = (params?: Record<string, unknown>) =>

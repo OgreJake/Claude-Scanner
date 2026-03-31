@@ -30,12 +30,12 @@ from server.core.credentials import CredentialManager, CredentialNotFoundError
 from server.core.enrichment import VulnerabilityEnrichmentService
 from server.core.transport import SSHTransport, WinRMTransport, TransportError
 from server.core.parsers import (
-    LinuxParser, WindowsParser, DarwinParser, UnixParser,
+    LinuxParser, WindowsParser, DarwinParser, UnixParser, IBMiParser,
     ParsedPackage, ParsedOSInfo,
 )
 from server.db.models import (
     Device, Finding, FindingStatus, FindingType,
-    Package, ScanJob, ScanStatus, ScanTarget, Severity,
+    Package, ScanJob, ScanStatus, ScanTarget, ScanType, Severity,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,6 +72,7 @@ _PARSERS = {
     "windows": WindowsParser(),
     "darwin":  DarwinParser(),
     "unix":    UnixParser(),
+    "ibmi":    IBMiParser(),
 }
 
 
@@ -157,6 +158,25 @@ class ScanEngine:
         await db.flush()
 
         try:
+            # For full scans, attempt agent deployment if not already installed.
+            # Failure is non-fatal — falls through to agentless scan.
+            scan_type_val = scan_job.scan_type if scan_job else None
+            if scan_type_val == ScanType.full and not device.agent_installed:
+                try:
+                    deployed = await self._deploy_agent(
+                        db, device,
+                        override_username=override_username,
+                        override_password=override_password,
+                    )
+                    if deployed:
+                        await db.flush()
+                        logger.info("Agent deployed to %s — switching to agent scan", device.hostname)
+                except Exception as exc:
+                    logger.warning(
+                        "Agent deployment failed for %s (falling back to agentless): %s",
+                        device.hostname, exc,
+                    )
+
             if device.agent_installed and device.agent_endpoint:
                 await self._scan_via_agent(db, device, target, scan_job)
             else:
@@ -210,6 +230,80 @@ class ScanEngine:
                 completed_at=datetime.utcnow() if all_done else None,
             )
         )
+
+    async def _deploy_agent(
+        self,
+        db: AsyncSession,
+        device: Device,
+        override_username: Optional[str] = None,
+        override_password: Optional[str] = None,
+    ) -> bool:
+        """
+        Deploy the Go scanner agent binary to the target device via SSH/SFTP.
+        Returns True if deployment succeeded and device record was updated.
+        Windows deployment via WinRM is not yet implemented.
+        """
+        import os
+
+        os_type = device.os_type.value if device.os_type else "linux"
+        ip_address = str(device.ip_address)
+
+        # Determine architecture suffix for the binary filename
+        arch = (device.architecture or "").lower()
+        arch_suffix = "arm64" if "arm" in arch or "aarch" in arch else "amd64"
+        binary_name = f"scanner-{os_type}-{arch_suffix}"
+        binary_path = os.path.join(settings.AGENT_BINARY_DIR, binary_name)
+
+        if not os.path.exists(binary_path):
+            logger.info(
+                "Agent binary %s not found — skipping deployment for %s",
+                binary_path, device.hostname,
+            )
+            return False
+
+        if os_type == "windows":
+            logger.info("Agent deployment via WinRM not yet implemented — skipping %s", device.hostname)
+            return False
+
+        with open(binary_path, "rb") as fh:
+            binary_data = fh.read()
+
+        creds = await self.cred_manager.get_credentials(
+            hostname=device.hostname,
+            ip_address=ip_address,
+            credential_ref=device.credential_ref,
+            os_type=os_type,
+            override_username=override_username,
+            override_password=override_password,
+        )
+
+        remote_path = "/tmp/claude-scanner-agent"
+        agent_endpoint = f"https://{ip_address}:{settings.AGENT_PORT}"
+
+        transport = SSHTransport(
+            host=ip_address,
+            port=device.ssh_port,
+            username=creds.username,
+            password=creds.password,
+            private_key=creds.ssh_key,
+            key_passphrase=creds.ssh_key_passphrase,
+            connect_timeout=settings.SCAN_TIMEOUT,
+        )
+        async with transport:
+            await transport.upload_file(binary_data, remote_path)
+            await transport.run(f"chmod +x {remote_path}")
+            await transport.run(
+                f"nohup {remote_path} "
+                f"--port {settings.AGENT_PORT} "
+                f"--token {settings.AGENT_TOKEN} "
+                f"> /tmp/claude-scanner-agent.log 2>&1 &"
+            )
+
+        device.agent_installed = True
+        device.agent_endpoint = agent_endpoint
+        device.agent_version = "0.1.0"
+        logger.info("Agent deployed to %s (%s)", device.hostname, agent_endpoint)
+        return True
 
     async def _scan_agentless(
         self,

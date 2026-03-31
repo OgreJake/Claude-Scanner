@@ -63,6 +63,8 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     AGENT_PORT: int = 9443
     AGENT_TOKEN: str = "change-me-agent-token"   # Shared secret for agent auth
+    # Directory containing pre-built agent binaries, e.g. scanner-linux-amd64
+    AGENT_BINARY_DIR: str = "/app/agents"
 
     # ------------------------------------------------------------------
     # Scanning defaults
