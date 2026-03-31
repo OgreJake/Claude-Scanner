@@ -7,7 +7,7 @@ import {
 import {
   listDevices, createDevice, deleteDevice, updateDevice,
   startDiscovery, getDiscoveryJob,
-  listGroups, createGroup, deleteGroup, addGroupMembers, removeGroupMember,
+  listGroups, createGroup, deleteGroup, removeGroupMember,
 } from '../lib/api'
 import type { DeviceListResponse, Device, DeviceGroup, DiscoveryJob } from '../types'
 import { format } from 'date-fns'
@@ -104,32 +104,11 @@ export default function Devices() {
     queryFn: () => listGroups().then((r) => r.data),
   })
 
-  // Filter devices by group (client-side for simplicity)
-  const displayedDevices = groupFilter
-    ? (data?.items ?? []).filter((d) => {
-        // We need a per-device group membership check; kept simple here.
-        // The group filter works by checking the device_ids returned from the group.
-        return groupDeviceIds.has(d.id)
-      })
-    : (data?.items ?? [])
-
-  const [groupDeviceIds, setGroupDeviceIds] = useState<Set<string>>(new Set())
-
-  useEffect(() => {
-    if (!groupFilter) { setGroupDeviceIds(new Set()); return }
-    // Fetch member IDs for the selected group
-    import('../lib/api').then(({ api }) =>
-      api.get(`/devices/groups/${groupFilter}`).then((r) => {
-        // The group endpoint returns device_count but not device_ids.
-        // Workaround: filter devices by fetching all devices in the group via a future endpoint.
-        // For now, load all devices and cross-reference via the group's device list.
-      })
-    )
-    // Simpler approach: list all devices and mark group membership from device.groups
-    // (not included in list endpoint). We'll just show all devices when a group is selected
-    // until we add a per-group device list endpoint. For now, clear filter.
-    setGroupDeviceIds(new Set())
-  }, [groupFilter])
+  // Group membership filter — populated by fetching per-group device IDs.
+  // The current GET /devices/groups/{id} returns device_count only; we'll
+  // populate this properly when a per-group device-list endpoint is added.
+  // Until then, selecting a group highlights the filter label without hiding rows.
+  const [groupDeviceIds] = useState<Set<string>>(new Set())
 
   // ---------------------------------------------------------------------------
   // Mutations
