@@ -104,11 +104,9 @@ export default function Devices() {
     queryFn: () => listGroups().then((r) => r.data),
   })
 
-  // Group membership filter — populated by fetching per-group device IDs.
-  // The current GET /devices/groups/{id} returns device_count only; we'll
-  // populate this properly when a per-group device-list endpoint is added.
-  // Until then, selecting a group highlights the filter label without hiding rows.
-  const [groupDeviceIds] = useState<Set<string>>(new Set())
+  // Group membership filter — a per-group device-list endpoint will wire
+  // this up properly when added. Selecting a group highlights the filter
+  // label; row-level filtering will follow.
 
   // ---------------------------------------------------------------------------
   // Mutations
