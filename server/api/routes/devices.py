@@ -1,4 +1,4 @@
-"""Device management routes — CRUD, bulk import, credential assignment."""
+"""Device management routes — CRUD, bulk import, credential assignment, subnet discovery."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from server.api.deps import CurrentUser, DBSession
-from server.db.models import Device, DeviceStatus, DiscoveryMethod, OSType
+from server.db.models import Device, DeviceStatus, DiscoveryJob, DiscoveryMethod, OSType, ScanStatus
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
@@ -99,6 +99,26 @@ class BulkImportRow(BaseModel):
     tags: dict[str, Any] = {}
 
 
+class DiscoveryRequest(BaseModel):
+    name: str
+    target_ranges: list[str]   # e.g. ["192.168.1.0/24", "10.0.0.5"]
+    ports: list[int] = []      # empty = use scanner defaults
+
+
+class DiscoveryJobResponse(BaseModel):
+    id: str
+    name: str
+    target_ranges: list[str]
+    status: str
+    devices_found: int
+    created_at: datetime
+    completed_at: Optional[datetime]
+    error_message: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -152,6 +172,51 @@ async def create_device(
     db.add(device)
     await db.flush()
     return device
+
+
+# MUST be declared before /{device_id} to avoid route shadowing
+@router.post("/discover", response_model=DiscoveryJobResponse, status_code=status.HTTP_201_CREATED)
+async def start_discovery(
+    payload: DiscoveryRequest,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> DiscoveryJob:
+    """Create a discovery job that probes a subnet and registers live hosts as devices."""
+    from server.tasks.discovery_tasks import run_discovery
+
+    if not payload.target_ranges:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="target_ranges must not be empty")
+
+    job = DiscoveryJob(
+        name=payload.name,
+        target_ranges=payload.target_ranges,
+        ports=payload.ports,
+        methods=["tcp_probe"],
+        created_by=current_user.id,
+        status=ScanStatus.pending,
+    )
+    db.add(job)
+    await db.flush()
+
+    task = run_discovery.delay(job.id)
+    job.celery_task_id = task.id
+    await db.flush()
+
+    return job
+
+
+@router.get("/discover/{job_id}", response_model=DiscoveryJobResponse)
+async def get_discovery_job(
+    job_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> DiscoveryJob:
+    """Poll the status of a running or completed discovery job."""
+    result = await db.execute(select(DiscoveryJob).where(DiscoveryJob.id == job_id))
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovery job not found")
+    return job
 
 
 @router.get("/{device_id}", response_model=DeviceResponse)

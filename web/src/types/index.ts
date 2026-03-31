@@ -107,6 +107,17 @@ export interface Finding {
   notes: string | null
 }
 
+export interface DiscoveryJob {
+  id: string
+  name: string
+  target_ranges: string[]
+  status: ScanStatus
+  devices_found: number
+  created_at: string
+  completed_at: string | null
+  error_message: string | null
+}
+
 export interface FindingSummary {
   total: number
   critical: number

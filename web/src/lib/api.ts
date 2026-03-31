@@ -53,6 +53,12 @@ export const deleteDevice = (id: string) => api.delete(`/devices/${id}`)
 export const bulkImportDevices = (rows: unknown[]) =>
   api.post('/devices/bulk-import', rows)
 
+export const startDiscovery = (data: { name: string; target_ranges: string[]; ports?: number[] }) =>
+  api.post('/devices/discover', data)
+
+export const getDiscoveryJob = (jobId: string) =>
+  api.get(`/devices/discover/${jobId}`)
+
 // --- Scans ---
 export const listScans = (params?: Record<string, unknown>) =>
   api.get('/scans', { params })

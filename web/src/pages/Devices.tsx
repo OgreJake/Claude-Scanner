@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Search, Trash2, RefreshCw } from 'lucide-react'
-import { listDevices, createDevice, deleteDevice } from '../lib/api'
-import type { DeviceListResponse } from '../types'
+import { Plus, Search, Trash2, RefreshCw, Network, X, CheckCircle, AlertCircle, Loader2 } from 'lucide-react'
+import { listDevices, createDevice, deleteDevice, startDiscovery, getDiscoveryJob } from '../lib/api'
+import type { DeviceListResponse, DiscoveryJob } from '../types'
 import { format } from 'date-fns'
 
 const OS_ICONS: Record<string, string> = {
@@ -17,10 +17,14 @@ export default function Devices() {
   const qc = useQueryClient()
   const [search, setSearch] = useState('')
   const [showAdd, setShowAdd] = useState(false)
+  const [showDiscover, setShowDiscover] = useState(false)
   const [form, setForm] = useState({
     hostname: '', ip_address: '', os_type: 'unknown',
     credential_ref: '', notes: '',
   })
+  const [discoverForm, setDiscoverForm] = useState({ name: '', subnets: '' })
+  const [discoveryJob, setDiscoveryJob] = useState<DiscoveryJob | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const { data, isLoading, refetch } = useQuery<DeviceListResponse>({
     queryKey: ['devices', search],
@@ -46,6 +50,54 @@ export default function Devices() {
     },
   })
 
+  const discoverMutation = useMutation({
+    mutationFn: () => {
+      const ranges = discoverForm.subnets
+        .split(/[\n,]+/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+      return startDiscovery({ name: discoverForm.name, target_ranges: ranges }).then((r) => r.data as DiscoveryJob)
+    },
+    onSuccess: (job: DiscoveryJob) => {
+      setDiscoveryJob(job)
+    },
+  })
+
+  // Poll discovery job until terminal state
+  useEffect(() => {
+    if (!discoveryJob || discoveryJob.status === 'completed' || discoveryJob.status === 'failed') {
+      if (pollRef.current) clearInterval(pollRef.current)
+      if (discoveryJob?.status === 'completed') {
+        qc.invalidateQueries({ queryKey: ['devices'] })
+      }
+      return
+    }
+    if (pollRef.current) clearInterval(pollRef.current)
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await getDiscoveryJob(discoveryJob.id)
+        const updated = res.data as DiscoveryJob
+        setDiscoveryJob(updated)
+        if (updated.status === 'completed' || updated.status === 'failed') {
+          clearInterval(pollRef.current!)
+          if (updated.status === 'completed') {
+            qc.invalidateQueries({ queryKey: ['devices'] })
+          }
+        }
+      } catch {
+        clearInterval(pollRef.current!)
+      }
+    }, 3000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [discoveryJob?.id, discoveryJob?.status, qc])
+
+  function closeDiscovery() {
+    setShowDiscover(false)
+    setDiscoveryJob(null)
+    setDiscoverForm({ name: '', subnets: '' })
+    discoverMutation.reset()
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
@@ -61,7 +113,14 @@ export default function Devices() {
             <RefreshCw size={16} />
           </button>
           <button
-            onClick={() => setShowAdd(true)}
+            onClick={() => { setShowDiscover(true); setShowAdd(false) }}
+            className="flex items-center gap-2 border border-brand-700 text-brand-700 px-4 py-2 rounded-lg
+                       text-sm font-medium hover:bg-brand-50 transition-colors"
+          >
+            <Network size={16} /> Discover Subnet
+          </button>
+          <button
+            onClick={() => { setShowAdd(true); setShowDiscover(false) }}
             className="flex items-center gap-2 bg-brand-700 text-white px-4 py-2 rounded-lg text-sm
                        font-medium hover:bg-brand-800 transition-colors"
           >
@@ -134,6 +193,114 @@ export default function Devices() {
               Cancel
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Discover subnet panel */}
+      {showDiscover && (
+        <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold">Discover Subnet</h3>
+            <button onClick={closeDiscovery} className="text-gray-400 hover:text-gray-600">
+              <X size={16} />
+            </button>
+          </div>
+
+          {/* Input form — hidden once job is submitted */}
+          {!discoveryJob && (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Job Name</label>
+                <input
+                  value={discoverForm.name}
+                  onChange={(e) => setDiscoverForm((f) => ({ ...f, name: e.target.value }))}
+                  placeholder="e.g. Office LAN sweep"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm
+                             focus:outline-none focus:ring-2 focus:ring-brand-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Subnets / IPs <span className="text-gray-400 font-normal">(one per line or comma-separated)</span>
+                </label>
+                <textarea
+                  value={discoverForm.subnets}
+                  onChange={(e) => setDiscoverForm((f) => ({ ...f, subnets: e.target.value }))}
+                  rows={3}
+                  placeholder="192.168.1.0/24&#10;10.0.0.5"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm font-mono
+                             focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none"
+                />
+              </div>
+              {discoverMutation.isError && (
+                <p className="text-xs text-red-600">Failed to start discovery. Please try again.</p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => discoverMutation.mutate()}
+                  disabled={!discoverForm.name || !discoverForm.subnets.trim() || discoverMutation.isPending}
+                  className="bg-brand-700 text-white px-4 py-1.5 rounded-lg text-sm font-medium
+                             hover:bg-brand-800 disabled:opacity-50 flex items-center gap-2"
+                >
+                  {discoverMutation.isPending && <Loader2 size={14} className="animate-spin" />}
+                  {discoverMutation.isPending ? 'Starting…' : 'Start Discovery'}
+                </button>
+                <button
+                  onClick={closeDiscovery}
+                  className="px-4 py-1.5 rounded-lg text-sm border border-gray-200 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Job progress */}
+          {discoveryJob && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                {discoveryJob.status === 'completed' && <CheckCircle size={18} className="text-green-600" />}
+                {discoveryJob.status === 'failed' && <AlertCircle size={18} className="text-red-500" />}
+                {(discoveryJob.status === 'pending' || discoveryJob.status === 'running') && (
+                  <Loader2 size={18} className="animate-spin text-brand-600" />
+                )}
+                <div>
+                  <p className="text-sm font-medium text-gray-900">{discoveryJob.name}</p>
+                  <p className="text-xs text-gray-500 capitalize">{discoveryJob.status}</p>
+                </div>
+              </div>
+
+              <div className="bg-gray-50 rounded-lg px-4 py-3 text-sm space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Target ranges</span>
+                  <span className="font-mono text-xs text-gray-700">{discoveryJob.target_ranges.join(', ')}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Devices found</span>
+                  <span className="font-semibold text-gray-900">{discoveryJob.devices_found}</span>
+                </div>
+                {discoveryJob.completed_at && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Completed</span>
+                    <span className="text-gray-700">{format(new Date(discoveryJob.completed_at), 'HH:mm:ss')}</span>
+                  </div>
+                )}
+              </div>
+
+              {discoveryJob.error_message && (
+                <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{discoveryJob.error_message}</p>
+              )}
+
+              {(discoveryJob.status === 'completed' || discoveryJob.status === 'failed') && (
+                <button
+                  onClick={closeDiscovery}
+                  className="px-4 py-1.5 rounded-lg text-sm border border-gray-200 hover:bg-gray-50"
+                >
+                  Close
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
 
