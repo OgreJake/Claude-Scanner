@@ -8,6 +8,7 @@ import {
   listDevices, createDevice, deleteDevice, updateDevice,
   startDiscovery, getDiscoveryJob,
   listGroups, createGroup, deleteGroup, removeGroupMember,
+  pingAgent,
 } from '../lib/api'
 import type { DeviceListResponse, Device, DeviceGroup, DiscoveryJob } from '../types'
 import { format } from 'date-fns'
@@ -185,6 +186,11 @@ export default function Devices() {
     mutationFn: ({ groupId, deviceId }: { groupId: string; deviceId: string }) =>
       removeGroupMember(groupId, deviceId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['deviceGroups'] }),
+  })
+
+  const pingAgentMutation = useMutation({
+    mutationFn: (deviceId: string) => pingAgent(deviceId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['devices'] }),
   })
 
   // ---------------------------------------------------------------------------
@@ -623,6 +629,15 @@ export default function Devices() {
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-1">
+                    {d.agent_installed && (
+                      <button
+                        onClick={() => pingAgentMutation.mutate(d.id)}
+                        title="Ping agent"
+                        className="text-gray-400 hover:text-brand-600 transition-colors p-1 rounded"
+                      >
+                        <RefreshCw size={13} className={pingAgentMutation.isPending ? 'animate-spin' : ''} />
+                      </button>
+                    )}
                     <button
                       onClick={() => openEdit(d)}
                       title="Edit device"

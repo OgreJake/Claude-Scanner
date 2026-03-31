@@ -128,6 +128,18 @@ export interface DeviceGroup {
   updated_at: string
 }
 
+export interface DeviceTreeGroup {
+  id: string
+  name: string
+  color: string | null
+  devices: Device[]
+}
+
+export interface DeviceTree {
+  groups: DeviceTreeGroup[]
+  ungrouped: Device[]
+}
+
 export interface FindingSummary {
   total: number
   critical: number

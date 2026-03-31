@@ -80,6 +80,11 @@ export const addGroupMembers = (groupId: string, deviceIds: string[]) =>
 export const removeGroupMember = (groupId: string, deviceId: string) =>
   api.delete(`/devices/groups/${groupId}/members/${deviceId}`)
 
+export const getDeviceTree = () => api.get('/devices/tree')
+
+export const pingAgent = (deviceId: string) =>
+  api.post(`/devices/${deviceId}/ping-agent`)
+
 // --- Scans ---
 export const listScans = (params?: Record<string, unknown>) =>
   api.get('/scans', { params })

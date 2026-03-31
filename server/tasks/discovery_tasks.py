@@ -24,9 +24,13 @@ from server.db.models import (
 logger = logging.getLogger(__name__)
 
 # Ports used to guess OS type
-_LINUX_PORTS = [22]
-_WINDOWS_PORTS = [445, 3389, 5985]
-_COMMON_PORTS = [22, 80, 443, 445, 3389, 5985, 8080, 8443]
+# IBM i (AS/400) specific: 449=DDM-RDB/DRDA, 446-448=DDM, 8470=IBM i Access
+_IBMI_PORTS    = [446, 447, 448, 449, 8470]
+# Windows-exclusive: 3389=RDP, 5985=WinRM — IBM i does NOT expose these
+_WINDOWS_EXCLUSIVE_PORTS = [3389, 5985]
+_LINUX_PORTS   = [22]
+# Port 445 (SMB/NetServer) is shared by Windows AND IBM i — not a reliable discriminator
+_COMMON_PORTS  = [22, 80, 443, 445, 3389, 5985, 446, 447, 448, 449, 8080, 8443, 8470]
 
 
 @shared_task(
@@ -134,12 +138,19 @@ async def _probe_host(ip: str) -> dict | None:
     if not open_ports:
         return None
 
-    # Guess OS type from open ports
+    # Guess OS type from open ports.
+    # Priority order: IBM i > Windows > Linux > unknown
+    #   IBM i:   any DDM/DRDA port is definitive (446-449, 8470)
+    #   Windows: RDP (3389) or WinRM (5985) — these don't exist on IBM i
+    #   Linux:   SSH only, no Windows/IBM i indicators
+    #   Note: port 445 (SMB) is shared by Windows AND IBM i — not used alone
     os_type = OSType.unknown
-    if any(p in open_ports for p in _WINDOWS_PORTS):
+    if any(p in open_ports for p in _IBMI_PORTS):
+        os_type = OSType.ibmi
+    elif any(p in open_ports for p in _WINDOWS_EXCLUSIVE_PORTS):
         os_type = OSType.windows
     elif 22 in open_ports:
-        os_type = OSType.linux  # Could be Darwin/Unix, SSH is present on all
+        os_type = OSType.linux  # Could be Darwin/Unix — SSH present on all POSIX OSes
 
     # Reverse DNS lookup
     try:
@@ -164,6 +175,12 @@ async def _upsert_device(
     if existing:
         existing.status = DeviceStatus.online
         existing.updated_at = datetime.utcnow()
+        # Only update the hostname/OS type from probe data if it was previously
+        # unknown — trust any type that was manually set or refined by a real scan.
+        if existing.os_type == OSType.unknown:
+            existing.os_type = probe["os_type"]
+        if existing.hostname == str(probe["ip"]) or not existing.hostname:
+            existing.hostname = probe["hostname"]
         await db.flush()
         return True
 

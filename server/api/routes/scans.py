@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from server.api.deps import CurrentUser, DBSession
 from server.db.models import (
-    Device, DiscoveryJob, ScanJob, ScanStatus, ScanTarget, ScanType,
+    Device, DiscoveryJob, ScanJob, ScanStatus, ScanTarget, ScanType, device_group_members,
 )
 from server.tasks.celery_app import celery_app  # noqa: F401 — registers app as current
 from server.tasks.scan_tasks import scan_device
@@ -28,7 +28,8 @@ router = APIRouter(prefix="/scans", tags=["scans"])
 class ScanJobCreate(BaseModel):
     name: str
     scan_type: ScanType = ScanType.full
-    device_ids: list[str]
+    device_ids: list[str] = []
+    group_ids: list[str] = []    # expanded server-side; merged with device_ids
     config: dict[str, Any] = {}
 
 
@@ -96,32 +97,49 @@ async def create_scan(
     db: DBSession,
     current_user: CurrentUser,
 ) -> ScanJob:
-    # Verify all devices exist
+    # Expand group_ids → device_ids
+    all_device_ids: set[str] = set(payload.device_ids)
+    if payload.group_ids:
+        rows = await db.execute(
+            select(device_group_members.c.device_id).where(
+                device_group_members.c.group_id.in_(payload.group_ids)
+            )
+        )
+        all_device_ids.update(row[0] for row in rows.all())
+
+    if not all_device_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No devices selected — provide device_ids or group_ids",
+        )
+
+    # Verify all resolved devices exist
     result = await db.execute(
-        select(Device).where(Device.id.in_(payload.device_ids))
+        select(Device).where(Device.id.in_(all_device_ids))
     )
     devices = result.scalars().all()
     found_ids = {d.id for d in devices}
-    missing = set(payload.device_ids) - found_ids
+    missing = all_device_ids - found_ids
     if missing:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Device(s) not found: {', '.join(missing)}",
         )
+    resolved_ids = list(found_ids)
 
     job = ScanJob(
         name=payload.name,
         scan_type=payload.scan_type,
         created_by=current_user.id,
         config=payload.config,
-        total_devices=len(payload.device_ids),
+        total_devices=len(resolved_ids),
         status=ScanStatus.pending,
     )
     db.add(job)
     await db.flush()
 
     # Create one ScanTarget per device and dispatch Celery tasks
-    for device_id in payload.device_ids:
+    for device_id in resolved_ids:
         target = ScanTarget(
             scan_job_id=job.id,
             device_id=device_id,

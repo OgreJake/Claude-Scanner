@@ -380,6 +380,81 @@ async def remove_group_member(
     )
 
 
+@router.get("/tree")
+async def get_device_tree(db: DBSession, current_user: CurrentUser) -> dict:
+    """
+    Return all devices organised by group for tree navigation.
+    Response: {groups: [{id, name, color, devices: [...]}, ...], ungrouped: [...]}
+    Each device object is the same shape as DeviceResponse.
+    """
+    from sqlalchemy import select as sa_select
+
+    groups_result = await db.execute(select(DeviceGroup).order_by(DeviceGroup.name))
+    groups = groups_result.scalars().all()
+
+    memberships_result = await db.execute(
+        sa_select(device_group_members.c.group_id, device_group_members.c.device_id)
+    )
+    group_to_device_ids: dict[str, list[str]] = {}
+    all_grouped_ids: set[str] = set()
+    for gid, did in memberships_result.all():
+        group_to_device_ids.setdefault(gid, []).append(did)
+        all_grouped_ids.add(did)
+
+    devices_result = await db.execute(select(Device).order_by(Device.hostname))
+    devices = devices_result.scalars().all()
+    device_map = {d.id: d for d in devices}
+
+    def _dev(d: Device) -> dict:
+        return {
+            "id": d.id, "hostname": d.hostname, "ip_address": str(d.ip_address),
+            "os_type": d.os_type, "status": d.status,
+            "agent_installed": d.agent_installed, "last_scanned_at": d.last_scanned_at,
+        }
+
+    tree_groups = [
+        {
+            "id": g.id, "name": g.name, "color": g.color,
+            "devices": [_dev(device_map[did]) for did in group_to_device_ids.get(g.id, []) if did in device_map],
+        }
+        for g in groups
+    ]
+    ungrouped = [_dev(d) for d in devices if d.id not in all_grouped_ids]
+
+    return {"groups": tree_groups, "ungrouped": ungrouped}
+
+
+@router.post("/{device_id}/ping-agent", response_model=DeviceResponse)
+async def ping_agent(device_id: str, db: DBSession, current_user: CurrentUser) -> Device:
+    """
+    Ping the deployed agent on a device and update agent_installed / agent_last_seen.
+    Safe to call even if no agent has been deployed — returns the device unchanged.
+    """
+    import httpx as _httpx
+
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found")
+
+    if device.agent_endpoint:
+        try:
+            async with _httpx.AsyncClient(verify=False, timeout=5.0) as client:
+                resp = await client.get(f"{device.agent_endpoint}/health")
+                reachable = resp.status_code == 200
+        except Exception:
+            reachable = False
+
+        if reachable != device.agent_installed or reachable:
+            device.agent_installed = reachable
+            if reachable:
+                device.agent_last_seen = datetime.utcnow()
+            device.updated_at = datetime.utcnow()
+            await db.flush()
+
+    return device
+
+
 @router.get("/{device_id}", response_model=DeviceResponse)
 async def get_device(device_id: str, db: DBSession, current_user: CurrentUser) -> Device:
     result = await db.execute(select(Device).where(Device.id == device_id))

@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { Plus, XCircle, Download } from 'lucide-react'
-import { listScans, createScan, cancelScan, listDevices, downloadScanPdf } from '../lib/api'
-import type { ScanJob, DeviceListResponse } from '../types'
+import { Plus, XCircle, Download, ChevronRight, ChevronDown } from 'lucide-react'
+import { listScans, createScan, cancelScan, downloadScanPdf, getDeviceTree } from '../lib/api'
+import type { ScanJob, DeviceTree } from '../types'
 import { format } from 'date-fns'
 
 const STATUS_COLOR: Record<string, string> = {
@@ -14,32 +14,171 @@ const STATUS_COLOR: Record<string, string> = {
   pending:   'text-blue-700 bg-blue-50',
 }
 
+// ---------------------------------------------------------------------------
+// Device tree picker
+// ---------------------------------------------------------------------------
+
+function DeviceTreePicker({
+  tree,
+  selectedDeviceIds,
+  selectedGroupIds,
+  onToggleDevice,
+  onToggleGroup,
+}: {
+  tree: DeviceTree
+  selectedDeviceIds: Set<string>
+  selectedGroupIds: Set<string>
+  onToggleDevice: (id: string) => void
+  onToggleGroup: (groupId: string, deviceIds: string[]) => void
+}) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+
+  function toggleCollapse(id: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  return (
+    <div className="max-h-64 overflow-y-auto border border-gray-200 rounded-lg text-sm">
+      {/* Groups */}
+      {tree.groups.map((g) => {
+        const isCollapsed = collapsed.has(g.id)
+        const groupChecked = selectedGroupIds.has(g.id)
+        const deviceIds = g.devices.map((d) => d.id)
+        const someSelected = deviceIds.some((id) => selectedDeviceIds.has(id))
+        const allSelected = deviceIds.length > 0 && deviceIds.every((id) => selectedDeviceIds.has(id))
+
+        return (
+          <div key={g.id}>
+            <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 border-b border-gray-100 hover:bg-gray-100 cursor-pointer">
+              <button
+                onClick={() => toggleCollapse(g.id)}
+                className="text-gray-400 hover:text-gray-600 flex-shrink-0"
+              >
+                {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+              </button>
+              <input
+                type="checkbox"
+                checked={groupChecked || allSelected}
+                ref={(el) => {
+                  if (el) el.indeterminate = !groupChecked && !allSelected && someSelected
+                }}
+                onChange={() => onToggleGroup(g.id, deviceIds)}
+                className="rounded border-gray-300 text-brand-700"
+                onClick={(e) => e.stopPropagation()}
+              />
+              <span
+                className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                style={{ backgroundColor: g.color ?? '#6b7280' }}
+              />
+              <span className="font-medium text-gray-800">{g.name}</span>
+              <span className="text-xs text-gray-400 ml-auto">{g.devices.length} devices</span>
+            </div>
+            {!isCollapsed && g.devices.map((d) => (
+              <label
+                key={d.id}
+                className="flex items-center gap-3 pl-10 pr-3 py-2 border-b border-gray-50 hover:bg-gray-50 cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedDeviceIds.has(d.id) || selectedGroupIds.has(g.id)}
+                  onChange={() => onToggleDevice(d.id)}
+                  className="rounded border-gray-300 text-brand-700"
+                />
+                <span className="text-gray-700">{d.hostname}</span>
+                <span className="text-xs text-gray-400 font-mono ml-auto">{d.ip_address}</span>
+              </label>
+            ))}
+          </div>
+        )
+      })}
+
+      {/* Ungrouped */}
+      {tree.ungrouped.length > 0 && (
+        <div>
+          <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 border-b border-gray-100">
+            <span className="w-4 flex-shrink-0" />
+            <span className="font-medium text-gray-500 text-xs uppercase tracking-wide">Ungrouped</span>
+            <span className="text-xs text-gray-400 ml-auto">{tree.ungrouped.length} devices</span>
+          </div>
+          {tree.ungrouped.map((d) => (
+            <label
+              key={d.id}
+              className="flex items-center gap-3 pl-7 pr-3 py-2 border-b border-gray-50 hover:bg-gray-50 cursor-pointer"
+            >
+              <input
+                type="checkbox"
+                checked={selectedDeviceIds.has(d.id)}
+                onChange={() => onToggleDevice(d.id)}
+                className="rounded border-gray-300 text-brand-700"
+              />
+              <span className="text-gray-700">{d.hostname}</span>
+              <span className="text-xs text-gray-400 font-mono ml-auto">{d.ip_address}</span>
+            </label>
+          ))}
+        </div>
+      )}
+
+      {tree.groups.length === 0 && tree.ungrouped.length === 0 && (
+        <p className="px-3 py-4 text-xs text-gray-400 text-center">
+          No devices found. Add one on the Devices page first.
+        </p>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
 export default function Scans() {
   const qc = useQueryClient()
   const [showNew, setShowNew] = useState(false)
   const [scanName, setScanName] = useState('')
   const [scanType, setScanType] = useState('full')
-  const [selectedDevices, setSelectedDevices] = useState<string[]>([])
+  const [selectedDeviceIds, setSelectedDeviceIds] = useState<Set<string>>(new Set())
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set())
 
   const { data: scans, isLoading } = useQuery<ScanJob[]>({
     queryKey: ['scans'],
     queryFn: () => listScans({ page_size: 50 }).then((r) => r.data),
-    refetchInterval: 5000, // poll every 5s while scans are running
+    refetchInterval: 5000,
   })
 
-  const { data: devicesData, isLoading: devicesLoading } = useQuery<DeviceListResponse>({
-    queryKey: ['devices-all'],
-    queryFn: () => listDevices({ page_size: 1000 }).then((r) => r.data),
+  const { data: tree, isLoading: treeLoading } = useQuery<DeviceTree>({
+    queryKey: ['deviceTree'],
+    queryFn: () => getDeviceTree().then((r) => r.data),
+    enabled: showNew,
   })
+
+  const totalSelected =
+    selectedDeviceIds.size +
+    (tree?.groups ?? [])
+      .filter((g) => selectedGroupIds.has(g.id))
+      .reduce((sum, g) => {
+        // avoid double-counting devices already in selectedDeviceIds
+        const extra = g.devices.filter((d) => !selectedDeviceIds.has(d.id)).length
+        return sum + extra
+      }, 0)
 
   const createMutation = useMutation({
     mutationFn: () =>
-      createScan({ name: scanName, scan_type: scanType, device_ids: selectedDevices }),
+      createScan({
+        name: scanName,
+        scan_type: scanType,
+        device_ids: Array.from(selectedDeviceIds),
+        group_ids: Array.from(selectedGroupIds),
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['scans'] })
       setShowNew(false)
       setScanName('')
-      setSelectedDevices([])
+      setSelectedDeviceIds(new Set())
+      setSelectedGroupIds(new Set())
     },
   })
 
@@ -57,10 +196,32 @@ export default function Scans() {
     a.click()
   }
 
-  const toggleDevice = (id: string) =>
-    setSelectedDevices((prev) =>
-      prev.includes(id) ? prev.filter((d) => d !== id) : [...prev, id],
-    )
+  function toggleDevice(id: string) {
+    setSelectedDeviceIds((prev) => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  function toggleGroup(groupId: string, deviceIds: string[]) {
+    const isSelected = selectedGroupIds.has(groupId)
+    setSelectedGroupIds((prev) => {
+      const next = new Set(prev)
+      isSelected ? next.delete(groupId) : next.add(groupId)
+      return next
+    })
+    // Also update individual device selections to stay consistent
+    setSelectedDeviceIds((prev) => {
+      const next = new Set(prev)
+      if (isSelected) {
+        deviceIds.forEach((id) => next.delete(id))
+      } else {
+        deviceIds.forEach((id) => next.add(id))
+      }
+      return next
+    })
+  }
 
   return (
     <div className="space-y-5">
@@ -110,34 +271,30 @@ export default function Scans() {
 
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-2">
-              Select Devices ({selectedDevices.length} selected)
+              Select Devices
+              {totalSelected > 0 && (
+                <span className="ml-2 text-brand-700 font-semibold">{totalSelected} selected</span>
+              )}
             </label>
-            <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y">
-              {devicesLoading && (
-                <p className="px-3 py-4 text-xs text-gray-400 text-center">Loading devices…</p>
-              )}
-              {!devicesLoading && !devicesData?.items.length && (
-                <p className="px-3 py-4 text-xs text-gray-400 text-center">No devices found. Add one on the Devices page first.</p>
-              )}
-              {devicesData?.items.map((d) => (
-                <label key={d.id} className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={selectedDevices.includes(d.id)}
-                    onChange={() => toggleDevice(d.id)}
-                    className="rounded border-gray-300 text-brand-700"
-                  />
-                  <span className="text-sm text-gray-700">{d.hostname}</span>
-                  <span className="text-xs text-gray-400 font-mono">{d.ip_address}</span>
-                </label>
-              ))}
-            </div>
+            {treeLoading ? (
+              <div className="border border-gray-200 rounded-lg px-3 py-4 text-xs text-gray-400 text-center">
+                Loading devices…
+              </div>
+            ) : tree ? (
+              <DeviceTreePicker
+                tree={tree}
+                selectedDeviceIds={selectedDeviceIds}
+                selectedGroupIds={selectedGroupIds}
+                onToggleDevice={toggleDevice}
+                onToggleGroup={toggleGroup}
+              />
+            ) : null}
           </div>
 
           <div className="flex gap-2">
             <button
               onClick={() => createMutation.mutate()}
-              disabled={!scanName || selectedDevices.length === 0 || createMutation.isPending}
+              disabled={!scanName || totalSelected === 0 || createMutation.isPending}
               className="bg-brand-700 text-white px-4 py-1.5 rounded-lg text-sm font-medium
                          hover:bg-brand-800 disabled:opacity-50"
             >
